@@ -97,6 +97,7 @@ pub enum DataKey {
     // --- Early redemption ---
     RedemptionCounter,
     RedemptionRequest(u32),
+    EscrowedShares(Address),
 
     // --- Blacklist ---
     Blacklisted(Address),
@@ -520,6 +521,21 @@ pub fn put_redemption_request(e: &Env, id: u32, req: RedemptionRequest) {
         BALANCE_LIFETIME_THRESHOLD,
         BALANCE_BUMP_AMOUNT,
     );
+}
+
+pub fn get_escrowed_shares(e: &Env, addr: &Address) -> i128 {
+    e.storage()
+        .persistent()
+        .get(&DataKey::EscrowedShares(addr.clone()))
+        .unwrap_or(0)
+}
+
+pub fn put_escrowed_shares(e: &Env, addr: &Address, amount: i128) {
+    let key = DataKey::EscrowedShares(addr.clone());
+    e.storage().persistent().set(&key, &amount);
+    e.storage()
+        .persistent()
+        .extend_ttl(&key, BALANCE_LIFETIME_THRESHOLD, BALANCE_BUMP_AMOUNT);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

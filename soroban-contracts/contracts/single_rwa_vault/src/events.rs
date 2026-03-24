@@ -171,6 +171,19 @@ pub fn emit_early_redemption_processed(
     );
 }
 
+/// Emitted by `cancel_early_redemption`.
+pub fn emit_early_redemption_cancelled(
+    e: &Env,
+    user: Address,
+    request_id: u32,
+    shares: i128,
+) {
+    e.events().publish(
+        (symbol_short!("erq_can"), user),
+        (request_id, shares),
+    );
+}
+
 /// Emitted by `transfer_admin`.
 pub fn emit_admin_transferred(e: &Env, old_admin: Address, new_admin: Address) {
     e.events().publish(

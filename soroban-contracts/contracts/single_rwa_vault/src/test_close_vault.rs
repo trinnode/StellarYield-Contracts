@@ -6,7 +6,7 @@ use soroban_sdk::{
 };
 
 use crate::{
-    test_helpers::{setup, setup_with_assets},
+    test_helpers::{setup, mint_usdc},
     VaultState, Error,
 };
 
@@ -33,9 +33,13 @@ fn test_close_vault_success() {
 #[test]
 #[should_panic(expected = "Error(Contract, #27)")] // VaultNotEmpty
 fn test_close_vault_fails_if_not_empty() {
-    let ctx = setup_with_assets(1000);
+    let ctx = setup();
     let v = ctx.vault();
     let e = &ctx.env;
+
+    // Mint some shares
+    mint_usdc(e, &ctx.asset_id, &ctx.user, 1000);
+    v.deposit(&ctx.user, &1000i128, &ctx.user);
 
     e.ledger().set_timestamp(100);
     v.activate_vault(&ctx.operator);
