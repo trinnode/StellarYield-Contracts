@@ -174,6 +174,47 @@ fn test_request_early_redemption_creates_request() {
     assert_eq!(request_id2, 2u32);
 }
 
+/// Verify the user-facing query functions and counter behave correctly.
+#[test]
+fn test_user_redemption_requests_query_and_counter() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (vault_id, token_id, zkme_id, admin) = make_vault(&env);
+    let user = Address::generate(&env);
+
+    let deposit_amount = 1_000_000i128;
+    let shares = fund_user(&env, &vault_id, &token_id, &zkme_id, &user, deposit_amount);
+
+    // Activate the vault so early redemption is available
+    activate(&env, &vault_id, &admin);
+
+    let vault = SingleRWAVaultClient::new(&env, &vault_id);
+
+    // Create two requests
+    let req1 = vault.request_early_redemption(&user, &shares);
+    let shares2 = fund_user(&env, &vault_id, &token_id, &zkme_id, &user, deposit_amount);
+    let req2 = vault.request_early_redemption(&user, &shares2);
+
+    // Query by ID
+    let r1 = vault.get_redemption_request(&req1);
+    assert_eq!(r1.shares, shares);
+    assert_eq!(r1.processed, false);
+
+    let r2 = vault.get_redemption_request(&req2);
+    assert_eq!(r2.shares, shares2);
+
+    // Query list by user
+    let ids = vault.get_user_redemption_requests(&user);
+    assert_eq!(ids.len(), 2u32);
+    assert_eq!(ids.get(0).unwrap(), req1);
+    assert_eq!(ids.get(1).unwrap(), req2);
+
+    // Counter should reflect the last id
+    let counter = vault.redemption_counter();
+    assert_eq!(counter, req2);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests — Early redemption: process with fee
 // ─────────────────────────────────────────────────────────────────────────────

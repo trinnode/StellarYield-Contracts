@@ -398,6 +398,21 @@ impl SingleRWAVault {
         get_redemption_request(e, request_id)
     }
 
+    /// Public view: get a redemption request by ID
+    pub fn get_redemption_request(e: &Env, request_id: u32) -> RedemptionRequest {
+        crate::storage::get_redemption_request(e, request_id)
+    }
+
+    /// Public view: list all redemption request IDs for a user
+    pub fn get_user_redemption_requests(e: &Env, user: Address) -> soroban_sdk::Vec<u32> {
+        crate::storage::get_user_redemption_requests(e, &user)
+    }
+
+    /// Public view: current redemption counter
+    pub fn redemption_counter(e: &Env) -> u32 {
+        crate::storage::get_redemption_counter(e)
+    }
+
     // ─────────────────────────────────────────────────────────────────
     // ERC-4626 max helpers
     // ─────────────────────────────────────────────────────────────────
@@ -904,6 +919,11 @@ impl SingleRWAVault {
                 processed: false,
             },
         );
+
+        // Record mapping from user -> list of request IDs for easy lookup
+        let mut list = crate::storage::get_user_redemption_requests(e, &user);
+        list.push_back(id);
+        crate::storage::put_user_redemption_requests(e, &user, list);
 
         emit_early_redemption_requested(e, user, id, shares);
         bump_instance(e);

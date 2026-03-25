@@ -12,7 +12,7 @@
 //! INSTANCE_BUMP_AMOUNT  ≈ 30 days
 //! BALANCE_BUMP_AMOUNT   ≈ 60 days
 
-use soroban_sdk::{contracttype, panic_with_error, Address, Env, String};
+use soroban_sdk::{contracttype, panic_with_error, Address, Env, String, Vec};
 
 use crate::errors::Error;
 use crate::types::{RedemptionRequest, VaultState};
@@ -100,6 +100,7 @@ pub enum DataKey {
     // --- Early redemption ---
     RedemptionCounter,
     RedemptionRequest(u32),
+    UserRedemptionRequests(Address),
     EscrowedShares(Address),
 
     // --- Blacklist ---
@@ -541,6 +542,24 @@ pub fn put_redemption_request(e: &Env, id: u32, req: RedemptionRequest) {
         BALANCE_LIFETIME_THRESHOLD,
         BALANCE_BUMP_AMOUNT,
     );
+}
+
+pub fn get_user_redemption_requests(e: &Env, user: &Address) -> Vec<u32> {
+    let key = DataKey::UserRedemptionRequests(user.clone());
+    let opt: Option<Vec<u32>> = e.storage().persistent().get(&key);
+    match opt {
+        Some(list) => {
+            e.storage().persistent().extend_ttl(&key, BALANCE_LIFETIME_THRESHOLD, BALANCE_BUMP_AMOUNT);
+            list
+        }
+        None => Vec::new(e),
+    }
+}
+
+pub fn put_user_redemption_requests(e: &Env, user: &Address, ids: Vec<u32>) {
+    let key = DataKey::UserRedemptionRequests(user.clone());
+    e.storage().persistent().set(&key, &ids);
+    e.storage().persistent().extend_ttl(&key, BALANCE_LIFETIME_THRESHOLD, BALANCE_BUMP_AMOUNT);
 }
 
 pub fn get_escrowed_shares(e: &Env, addr: &Address) -> i128 {
