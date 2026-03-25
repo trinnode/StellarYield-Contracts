@@ -1,8 +1,8 @@
 #![no_std]
 
-mod math;
 mod errors;
 mod events;
+mod math;
 mod storage;
 mod token_interface;
 mod types;
@@ -1693,7 +1693,6 @@ mod tests;
 mod test_close_vault;
 #[cfg(test)]
 mod test_constructor_validation;
-#[cfg(test)]
 mod test_token;
 #[cfg(test)]
 mod test_overflow;
