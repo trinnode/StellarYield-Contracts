@@ -16,4 +16,6 @@ pub enum Error {
     InvalidInitParams = 6,
     /// Batch size exceeds the maximum allowed limit.
     BatchTooLarge = 7,
+    /// Storage schema version is outdated; migrate() must be called.
+    MigrationRequired = 8,
 }

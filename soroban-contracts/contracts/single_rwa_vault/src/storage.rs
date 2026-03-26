@@ -69,11 +69,16 @@ pub enum DataKey {
     // --- Vault state ---
     VaultState,
     Paused,
+    FreezeFlags,
     ActivationTimestamp,
     /// Reentrancy lock — true while a guarded function is executing.
     Locked,
     /// Unix timestamp deadline for funding; 0 means no deadline.
     FundingDeadline,
+
+    // --- Versioning ---
+    ContractVersion,
+    StorageSchemaVersion,
 
     // --- Epoch / yield ---
     CurrentEpoch,
@@ -259,6 +264,8 @@ instance_get!(get_vault_state, VaultState, VaultState);
 instance_put!(put_vault_state, VaultState, VaultState);
 instance_get!(get_paused, Paused, bool);
 instance_put!(put_paused, Paused, bool);
+instance_get!(get_freeze_flags, FreezeFlags, u32);
+instance_put!(put_freeze_flags, FreezeFlags, u32);
 instance_get!(get_locked, Locked, bool);
 instance_put!(put_locked, Locked, bool);
 
@@ -291,6 +298,12 @@ instance_put!(put_total_deposited, TotalDeposited, i128);
 // RedemptionCounter
 instance_get!(get_redemption_counter, RedemptionCounter, u32);
 instance_put!(put_redemption_counter, RedemptionCounter, u32);
+
+// Versioning
+instance_get!(get_contract_version, ContractVersion, u32);
+instance_put!(put_contract_version, ContractVersion, u32);
+instance_get!(get_storage_schema_version, StorageSchemaVersion, u32);
+instance_put!(put_storage_schema_version, StorageSchemaVersion, u32);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Operator (instance storage — same lifetime as admin)

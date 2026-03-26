@@ -3,12 +3,17 @@
 mod errors;
 mod events;
 mod math;
+mod migrations;
 mod storage;
 mod token_interface;
 mod types;
 
 #[cfg(test)]
 mod fuzz_tests;
+#[cfg(test)]
+mod test_burn_yield_accounting;
+#[cfg(test)]
+mod test_convert_erc4626;
 #[cfg(test)]
 mod test_funding_deadline;
 #[cfg(test)]
@@ -20,6 +25,7 @@ use soroban_sdk::{contract, contractimpl, panic_with_error, token, Address, Env,
 
 use crate::errors::Error;
 use crate::events::*;
+use crate::migrations::CURRENT_SCHEMA_VERSION;
 use crate::storage::*;
 use crate::token_interface::*;
 
@@ -32,6 +38,12 @@ pub struct SingleRWAVault;
 
 #[contractimpl]
 impl SingleRWAVault {
+    pub const FREEZE_DEPOSIT_MINT: u32 = 1;
+    pub const FREEZE_WITHDRAW_REDEEM: u32 = 2;
+    pub const FREEZE_YIELD: u32 = 4;
+    pub const FREEZE_ALL: u32 =
+        Self::FREEZE_DEPOSIT_MINT | Self::FREEZE_WITHDRAW_REDEEM | Self::FREEZE_YIELD;
+
     // ─────────────────────────────────────────────────────────────────
     // Constructor
     // ─────────────────────────────────────────────────────────────────
@@ -96,6 +108,7 @@ impl SingleRWAVault {
         // Initial state
         put_vault_state(e, VaultState::Funding);
         put_paused(e, false);
+        put_freeze_flags(e, 0u32);
         put_locked(e, false);
         put_current_epoch(e, 0u32);
         put_total_yield_distributed(e, 0i128);
@@ -103,6 +116,10 @@ impl SingleRWAVault {
         put_total_supply(e, 0i128);
         put_transfer_requires_kyc(e, true);
         put_total_deposited(e, 0i128);
+
+        // Versioning
+        put_contract_version(e, 1u32);
+        put_storage_schema_version(e, 1u32);
 
         e.storage()
             .instance()
@@ -248,8 +265,9 @@ impl SingleRWAVault {
     pub fn deposit(e: &Env, caller: Address, assets: i128, receiver: Address) -> i128 {
         caller.require_auth();
         // --- Checks ---
+        require_current_schema(e);
         acquire_lock(e);
-        require_not_paused(e);
+        require_not_frozen(e, Self::FREEZE_DEPOSIT_MINT);
         require_not_blacklisted(e, &caller);
         require_not_blacklisted(e, &receiver);
         require_kyc_verified(e, &caller);
@@ -292,8 +310,9 @@ impl SingleRWAVault {
     pub fn mint(e: &Env, caller: Address, shares: i128, receiver: Address) -> i128 {
         caller.require_auth();
         // --- Checks ---
+        require_current_schema(e);
         acquire_lock(e);
-        require_not_paused(e);
+        require_not_frozen(e, Self::FREEZE_DEPOSIT_MINT);
         require_not_blacklisted(e, &caller);
         require_not_blacklisted(e, &receiver);
         require_kyc_verified(e, &caller);
@@ -347,8 +366,9 @@ impl SingleRWAVault {
     ) -> i128 {
         caller.require_auth();
         // --- Checks ---
+        require_current_schema(e);
         acquire_lock(e);
-        require_not_paused(e);
+        require_not_frozen(e, Self::FREEZE_WITHDRAW_REDEEM);
         require_not_blacklisted(e, &caller);
         require_not_blacklisted(e, &owner);
         require_not_blacklisted(e, &receiver);
@@ -398,8 +418,9 @@ impl SingleRWAVault {
     ) -> i128 {
         caller.require_auth();
         // --- Checks ---
+        require_current_schema(e);
         acquire_lock(e);
-        require_not_paused(e);
+        require_not_frozen(e, Self::FREEZE_WITHDRAW_REDEEM);
         require_not_blacklisted(e, &caller);
         require_not_blacklisted(e, &owner);
         require_not_blacklisted(e, &receiver);
@@ -448,6 +469,29 @@ impl SingleRWAVault {
     }
     pub fn preview_redeem(e: &Env, shares: i128) -> i128 {
         preview_redeem(e, shares)
+    }
+
+    // ERC-4626 pure conversion helpers (floor division)
+    // ─────────────────────────────────────────────────────────────────
+
+    pub fn convert_to_shares(e: &Env, assets: i128) -> i128 {
+        let supply = get_total_supply(e);
+        let ta = total_assets(e);
+        if supply == 0 || ta == 0 {
+            return assets;
+        }
+        // shares = assets * totalSupply / totalAssets (floor)
+        math::mul_div(e, assets, supply, ta)
+    }
+
+    pub fn convert_to_assets(e: &Env, shares: i128) -> i128 {
+        let supply = get_total_supply(e);
+        let ta = total_assets(e);
+        if supply == 0 {
+            return shares;
+        }
+        // assets = shares * totalAssets / totalSupply (floor)
+        math::mul_div(e, shares, ta, supply)
     }
 
     pub fn redemption_request(e: &Env, request_id: u32) -> RedemptionRequest {
@@ -535,8 +579,9 @@ impl SingleRWAVault {
     pub fn distribute_yield(e: &Env, caller: Address, amount: i128) -> u32 {
         caller.require_auth();
         // --- Checks ---
+        require_current_schema(e);
         acquire_lock(e);
-        require_not_paused(e);
+        require_not_frozen(e, Self::FREEZE_YIELD);
         // YieldOperator role required — also passes for FullOperator and admin.
         require_role(e, &caller, Role::YieldOperator);
         require_state(e, VaultState::Active);
@@ -571,8 +616,9 @@ impl SingleRWAVault {
     pub fn claim_yield(e: &Env, caller: Address) -> i128 {
         caller.require_auth();
         // --- Checks ---
+        require_current_schema(e);
         acquire_lock(e);
-        require_not_paused(e);
+        require_not_frozen(e, Self::FREEZE_YIELD);
         require_active_or_matured(e);
         require_not_blacklisted(e, &caller);
 
@@ -609,7 +655,7 @@ impl SingleRWAVault {
         caller.require_auth();
         // --- Checks ---
         acquire_lock(e);
-        require_not_paused(e);
+        require_not_frozen(e, Self::FREEZE_YIELD);
         require_active_or_matured(e);
         require_not_blacklisted(e, &caller);
 
@@ -733,7 +779,7 @@ impl SingleRWAVault {
         caller.require_auth();
         // --- Checks ---
         acquire_lock(e);
-        require_not_paused(e);
+        require_not_frozen(e, Self::FREEZE_WITHDRAW_REDEEM);
         require_state(e, VaultState::Cancelled);
 
         let shares = get_share_balance(e, &caller);
@@ -869,7 +915,7 @@ impl SingleRWAVault {
         caller.require_auth();
         // --- Checks ---
         acquire_lock(e);
-        require_not_paused(e);
+        require_not_frozen(e, Self::FREEZE_WITHDRAW_REDEEM);
         require_not_blacklisted(e, &caller);
         require_not_blacklisted(e, &owner);
         require_not_blacklisted(e, &receiver);
@@ -930,7 +976,7 @@ impl SingleRWAVault {
     /// Request early redemption (pending operator approval).
     pub fn request_early_redemption(e: &Env, caller: Address, shares: i128) -> u32 {
         caller.require_auth();
-        require_not_paused(e);
+        require_not_frozen(e, Self::FREEZE_WITHDRAW_REDEEM);
         require_not_closed(e);
         require_not_blacklisted(e, &caller);
 
@@ -1204,6 +1250,7 @@ impl SingleRWAVault {
         // TreasuryManager role required — also passes for FullOperator and admin.
         require_role(e, &caller, Role::TreasuryManager);
         put_paused(e, true);
+        put_freeze_flags(e, Self::FREEZE_ALL);
         emit_emergency_action(e, true, reason);
         bump_instance(e);
     }
@@ -1217,12 +1264,25 @@ impl SingleRWAVault {
         caller.require_auth();
         require_admin(e, &caller);
         put_paused(e, false);
+        put_freeze_flags(e, 0u32);
         emit_emergency_action(e, false, String::from_str(e, ""));
         bump_instance(e);
     }
 
     pub fn paused(e: &Env) -> bool {
         get_paused(e)
+    }
+
+    pub fn freeze_flags(e: &Env) -> u32 {
+        get_freeze_flags(e)
+    }
+
+    pub fn set_freeze_flags(e: &Env, caller: Address, flags: u32) {
+        caller.require_auth();
+        // TreasuryManager role required — also passes for FullOperator and admin.
+        require_role(e, &caller, Role::TreasuryManager);
+        put_freeze_flags(e, flags);
+        bump_instance(e);
     }
 
     /// Drain all vault assets to `recipient` and pause the vault.
@@ -1241,6 +1301,7 @@ impl SingleRWAVault {
 
         // --- Effects (pause before transferring) ---
         put_paused(e, true);
+        put_freeze_flags(e, Self::FREEZE_ALL);
         emit_emergency_action(
             e,
             true,
@@ -1355,8 +1416,35 @@ impl SingleRWAVault {
     }
 
     // ─────────────────────────────────────────────────────────────────
-    // View helpers
+    // Versioning and migration
     // ─────────────────────────────────────────────────────────────────
+
+    /// Admin-only migration entry point. Updates storage schema to the latest version.
+    /// Emits DataMigrated event. No-op if already up-to-date.
+    pub fn migrate(e: &Env, caller: Address) {
+        caller.require_auth();
+        require_admin(e, &caller);
+
+        let old_version = get_storage_schema_version(e);
+        if old_version >= CURRENT_SCHEMA_VERSION {
+            // Already up-to-date; no-op
+            return;
+        }
+
+        crate::migrations::run_migrations(e, old_version);
+        emit_data_migrated(e, old_version, CURRENT_SCHEMA_VERSION);
+        bump_instance(e);
+    }
+
+    /// Returns the current storage schema version.
+    pub fn storage_schema_version(e: &Env) -> u32 {
+        get_storage_schema_version(e)
+    }
+
+    /// Returns the contract’s immutable code version.
+    pub fn contract_version(e: &Env) -> u32 {
+        get_contract_version(e)
+    }
 
     pub fn asset(e: &Env) -> Address {
         get_asset(e)
@@ -1474,6 +1562,13 @@ impl SingleRWAVault {
 
     pub fn burn(e: &Env, from: Address, amount: i128) {
         from.require_auth();
+        // --- Effects ---
+        // Snapshot user and auto-claim pending yield to prevent accounting loss
+        update_user_snapshot(e, &from);
+        let pending = Self::pending_yield(e, from.clone());
+        if pending > 0 {
+            claim_yield_no_auth(e, &from);
+        }
         _burn(e, &from, amount);
         emit_burn(e, from, amount);
         bump_instance(e);
@@ -1486,6 +1581,13 @@ impl SingleRWAVault {
             panic_with_error!(e, Error::InsufficientAllowance);
         }
         put_share_allowance(e, &from, &spender, allowance - amount);
+        // --- Effects ---
+        // Snapshot user and auto-claim pending yield to prevent accounting loss
+        update_user_snapshot(e, &from);
+        let pending = Self::pending_yield(e, from.clone());
+        if pending > 0 {
+            claim_yield_no_auth(e, &from);
+        }
         _burn(e, &from, amount);
         emit_burn(e, from, amount);
         bump_instance(e);
@@ -1637,6 +1739,49 @@ fn _get_user_shares_for_epoch(e: &Env, user: &Address, epoch: u32) -> i128 {
 // Guard helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Require that storage schema is current; panics with MigrationRequired otherwise.
+/// Skipped for migrate, version, and admin functions.
+fn require_current_schema(e: &Env) {
+    if get_storage_schema_version(e) != CURRENT_SCHEMA_VERSION {
+        panic_with_error!(e, Error::MigrationRequired);
+    }
+}
+
+/// Internal yield claim helper that performs the same state transitions as
+/// `claim_yield` but skips `require_auth`.
+///
+/// Used by `burn`/`burn_from` to prevent loss of pending yield when shares are
+/// burned.
+fn claim_yield_no_auth(e: &Env, caller: &Address) {
+    // --- Checks ---
+    require_current_schema(e);
+    acquire_lock(e);
+    require_not_frozen(e, SingleRWAVault::FREEZE_YIELD);
+    require_active_or_matured(e);
+    require_not_blacklisted(e, caller);
+
+    let amount = SingleRWAVault::pending_yield(e, caller.clone());
+    if amount <= 0 {
+        release_lock(e);
+        return;
+    }
+
+    // --- Effects ---
+    let epoch = get_current_epoch(e);
+    for i in 1..=epoch {
+        if !get_has_claimed_epoch(e, caller, i) && _get_user_shares_for_epoch(e, caller, i) > 0 {
+            put_has_claimed_epoch(e, caller, i, true);
+        }
+    }
+
+    put_total_yield_claimed(e, caller, get_total_yield_claimed(e, caller) + amount);
+    transfer_asset_from_vault(e, caller, amount);
+
+    emit_yield_claimed(e, caller.clone(), amount, epoch);
+    bump_instance(e);
+    release_lock(e);
+}
+
 fn require_admin(e: &Env, caller: &Address) {
     if *caller != get_admin(e) {
         panic_with_error!(e, Error::NotAdmin);
@@ -1661,8 +1806,10 @@ fn require_role(e: &Env, caller: &Address, role: Role) {
     }
 }
 
-fn require_not_paused(e: &Env) {
-    if get_paused(e) {
+fn require_not_frozen(e: &Env, flag: u32) {
+    let flags = get_freeze_flags(e);
+    if (flags & flag) != 0 {
+        // Reuse VaultPaused error for backwards compatibility with existing tests.
         panic_with_error!(e, Error::VaultPaused);
     }
 }
@@ -1898,6 +2045,9 @@ mod test_redemption;
 mod test_withdraw;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod test_freeze_flags;
 
 #[cfg(test)]
 mod test_close_vault;
