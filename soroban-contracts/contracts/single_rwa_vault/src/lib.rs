@@ -11,10 +11,6 @@ mod types;
 #[cfg(test)]
 mod fuzz_tests;
 #[cfg(test)]
-mod test_helpers;
-#[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod test_access_control;
 #[cfg(test)]
 mod test_burn_snapshot;
@@ -41,6 +37,8 @@ mod test_freeze_flags;
 #[cfg(test)]
 mod test_funding_deadline;
 #[cfg(test)]
+mod test_helpers;
+#[cfg(test)]
 mod test_lifecycle;
 #[cfg(test)]
 mod test_multisig_emergency;
@@ -58,6 +56,8 @@ mod test_token;
 mod test_vault_state_guards;
 #[cfg(test)]
 mod test_withdraw;
+#[cfg(test)]
+mod tests;
 
 pub use crate::types::*;
 
@@ -2213,8 +2213,8 @@ fn release_lock(e: &Env) {
 
 /// Panics with `NotEmergencySigner` if `caller` is not in the emergency signers list.
 fn require_emergency_signer(e: &Env, caller: &Address) {
-    let signers = get_emergency_signers(e)
-        .unwrap_or_else(|| panic_with_error!(e, Error::NotEmergencySigner));
+    let signers =
+        get_emergency_signers(e).unwrap_or_else(|| panic_with_error!(e, Error::NotEmergencySigner));
     let mut found = false;
     for i in 0..signers.len() {
         if signers.get(i).unwrap() == *caller {
@@ -2384,4 +2384,3 @@ mod test {
         client.deposit(&depositor, &10_0000000, &depositor);
     }
 }
-

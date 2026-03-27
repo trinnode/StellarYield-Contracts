@@ -770,9 +770,7 @@ pub fn put_emergency_threshold(e: &Env, threshold: u32) {
 }
 
 pub fn remove_emergency_threshold(e: &Env) {
-    e.storage()
-        .instance()
-        .remove(&EmergencyDataKey::Threshold);
+    e.storage().instance().remove(&EmergencyDataKey::Threshold);
 }
 
 pub fn get_emergency_proposal_counter(e: &Env) -> u32 {
@@ -799,11 +797,9 @@ pub fn get_emergency_proposal(e: &Env, id: u32) -> Option<crate::types::Emergenc
 pub fn put_emergency_proposal(e: &Env, id: u32, proposal: crate::types::EmergencyProposal) {
     let key = EmergencyDataKey::Proposal(id);
     e.storage().persistent().set(&key, &proposal);
-    e.storage().persistent().extend_ttl(
-        &key,
-        BALANCE_LIFETIME_THRESHOLD,
-        BALANCE_BUMP_AMOUNT,
-    );
+    e.storage()
+        .persistent()
+        .extend_ttl(&key, BALANCE_LIFETIME_THRESHOLD, BALANCE_BUMP_AMOUNT);
 }
 
 pub fn get_emergency_proposal_approvals(e: &Env, id: u32) -> Vec<Address> {
@@ -816,9 +812,7 @@ pub fn get_emergency_proposal_approvals(e: &Env, id: u32) -> Vec<Address> {
 pub fn put_emergency_proposal_approvals(e: &Env, id: u32, approvals: Vec<Address>) {
     let key = EmergencyDataKey::Approvals(id);
     e.storage().persistent().set(&key, &approvals);
-    e.storage().persistent().extend_ttl(
-        &key,
-        BALANCE_LIFETIME_THRESHOLD,
-        BALANCE_BUMP_AMOUNT,
-    );
+    e.storage()
+        .persistent()
+        .extend_ttl(&key, BALANCE_LIFETIME_THRESHOLD, BALANCE_BUMP_AMOUNT);
 }
