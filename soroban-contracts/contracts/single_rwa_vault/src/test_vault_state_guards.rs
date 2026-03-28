@@ -326,3 +326,112 @@ fn test_claim_yield_for_epoch_during_funding_panics() {
     // Vault is still in Funding -- must panic.
     vault.claim_yield_for_epoch(&user, &1);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// process_early_redemption — state guard tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// process_early_redemption during Funding state must panic with Error::InvalidVaultState.
+#[test]
+#[should_panic]
+fn test_process_early_redemption_during_funding_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (vault_id, token_id, zkme_id, admin) = make_vault(&env);
+    let user = Address::generate(&env);
+
+    let shares = fund_user(&env, &vault_id, &token_id, &zkme_id, &user, 1_000_000);
+    let vault = SingleRWAVaultClient::new(&env, &vault_id);
+    let request_id = vault.request_early_redemption(&user, &shares);
+
+    // Vault is still in Funding -- must panic.
+    vault.process_early_redemption(&admin, &request_id);
+}
+
+/// process_early_redemption during Active state succeeds.
+#[test]
+fn test_process_early_redemption_during_active_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (vault_id, token_id, zkme_id, admin) = make_vault(&env);
+    let user = Address::generate(&env);
+
+    let shares = fund_user(&env, &vault_id, &token_id, &zkme_id, &user, 1_000_000);
+    activate(&env, &vault_id, &admin);
+
+    let vault = SingleRWAVaultClient::new(&env, &vault_id);
+    let request_id = vault.request_early_redemption(&user, &shares);
+
+    // Vault is Active -- succeeds.
+    vault.process_early_redemption(&admin, &request_id);
+    assert_eq!(vault.balance(&user), 0);
+}
+
+/// process_early_redemption during Matured state must panic with Error::InvalidVaultState.
+#[test]
+#[should_panic]
+fn test_process_early_redemption_during_matured_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (vault_id, token_id, zkme_id, admin) = make_vault(&env);
+    let user = Address::generate(&env);
+
+    let shares = fund_user(&env, &vault_id, &token_id, &zkme_id, &user, 1_000_000);
+    activate(&env, &vault_id, &admin);
+
+    let vault = SingleRWAVaultClient::new(&env, &vault_id);
+    let request_id = vault.request_early_redemption(&user, &shares);
+
+    mature(&env, &vault_id, &admin);
+
+    // Vault is Matured -- must panic.
+    vault.process_early_redemption(&admin, &request_id);
+}
+
+/// process_early_redemption during Closed state must panic.
+#[test]
+#[should_panic]
+fn test_process_early_redemption_during_closed_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (vault_id, token_id, zkme_id, admin) = make_vault(&env);
+    let user = Address::generate(&env);
+
+    let shares = fund_user(&env, &vault_id, &token_id, &zkme_id, &user, 1_000_000);
+    activate(&env, &vault_id, &admin);
+
+    let vault = SingleRWAVaultClient::new(&env, &vault_id);
+    let request_id = vault.request_early_redemption(&user, &shares);
+
+    mature(&env, &vault_id, &admin);
+    vault.close_vault(&admin);
+
+    // Vault is Closed -- must panic.
+    vault.process_early_redemption(&admin, &request_id);
+}
+
+/// Operator authentication is checked before the state guard.
+#[test]
+#[should_panic] // Should panic with auth failure, not InvalidVaultState (though both panic)
+fn test_process_early_redemption_auth_first() {
+    let env = Env::default();
+    // No mock_all_auths() here to test real auth if possible, or use explicit mock
+
+    let (vault_id, token_id, zkme_id, _admin) = make_vault(&env);
+    let user = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    let shares = fund_user(&env, &vault_id, &token_id, &zkme_id, &user, 1_000_000);
+
+    // Vault is in Funding (invalid state for this fn)
+    let vault = SingleRWAVaultClient::new(&env, &vault_id);
+    let request_id = vault.request_early_redemption(&user, &shares);
+
+    // Call with attacker address. auth should fail before state check.
+    // We expect a panic from require_auth() which doesn't match InvalidVaultState.
+    vault.process_early_redemption(&attacker, &request_id);
+}

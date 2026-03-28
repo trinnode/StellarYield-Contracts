@@ -2,7 +2,7 @@
 //!
 //! Each function mirrors an EVM event from ISingleRWA_Vault.sol.
 
-use soroban_sdk::{symbol_short, Address, Env, String};
+use soroban_sdk::{symbol_short, Address, Env, String, Symbol};
 
 use crate::types::{Role, VaultState};
 
@@ -140,9 +140,10 @@ pub fn emit_early_redemption_cancelled(e: &Env, user: Address, request_id: u32, 
 }
 
 /// Emitted by `transfer_admin`.
+#[allow(dead_code)]
 pub fn emit_admin_transferred(e: &Env, old_admin: Address, new_admin: Address) {
-    e.events()
-        .publish((symbol_short!("adm_xfr"),), (old_admin, new_admin));
+    let topics = (Symbol::new(e, "admin_transferred"), old_admin);
+    e.events().publish(topics, new_admin);
 }
 
 /// Emitted by `set_rwa_details`, `set_rwa_document_uri`, or `set_expected_apy`.
@@ -211,9 +212,16 @@ pub fn emit_data_migrated(e: &Env, old_version: u32, new_version: u32) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Emitted when a timelock action is proposed.
-pub fn emit_action_proposed(e: &Env, action_id: u32, action_type: crate::types::ActionType, executable_at: u64) {
-    e.events()
-        .publish((symbol_short!("act_prp"), action_id), (action_type, executable_at));
+pub fn emit_action_proposed(
+    e: &Env,
+    action_id: u32,
+    action_type: crate::types::ActionType,
+    executable_at: u64,
+) {
+    e.events().publish(
+        (symbol_short!("act_prp"), action_id),
+        (action_type, executable_at),
+    );
 }
 
 /// Emitted when a timelock action is executed.

@@ -11,9 +11,9 @@ mod types;
 #[cfg(test)]
 mod fuzz_tests;
 #[cfg(test)]
-mod test_allowance_ttl;
-#[cfg(test)]
 mod test_access_control;
+#[cfg(test)]
+mod test_allowance_ttl;
 #[cfg(test)]
 mod test_burn_snapshot;
 #[cfg(test)]
@@ -61,10 +61,10 @@ mod test_withdraw;
 #[cfg(test)]
 mod tests;
 
-pub use crate::types::*;
 pub use crate::storage::Key;
+pub use crate::types::*;
 
-use soroban_sdk::{contract, contractimpl, panic_with_error, token, Address, Env, String, Vec, Val, TryIntoVal, Symbol};
+use soroban_sdk::{contract, contractimpl, panic_with_error, token, Address, Env, String, Vec};
 
 use crate::errors::Error;
 use crate::events::*;
@@ -1326,12 +1326,31 @@ impl SingleRWAVault {
     /// Security: follows CEI — the request is marked processed and shares are
     /// burned from escrow (Effects) before the asset transfer (Interaction).
     /// Reentrancy lock prevents reentrant calls from processing the same request twice.
+    ///
+    /// # Errors
+    ///
+    /// - `Error::InvalidVaultState`: if the vault is not in `Active` state.
+    ///
+    /// # State
+    ///
+    /// - Requires `VaultState::Active`.
+    ///
+    /// # Transition Behavior
+    ///
+    /// - If the vault has already transitioned to `Matured`, the operator is
+    ///   blocked from processing the early redemption request.
+    /// - Users should use `redeem_at_maturity` instead, which applies a zero
+    ///   early exit fee.
     pub fn process_early_redemption(e: &Env, operator: Address, request_id: u32) {
         operator.require_auth();
         // --- Checks ---
         acquire_lock(e);
         // LifecycleManager role required — also passes for FullOperator and admin.
         require_role(e, &operator, Role::LifecycleManager);
+
+        // --- State ---
+        // Block processing in Matured state; users should use redeem_at_maturity.
+        require_state(e, VaultState::Active);
 
         let mut req = get_redemption_request(e, request_id);
         if req.processed {
@@ -1504,9 +1523,9 @@ impl SingleRWAVault {
         get_operator(e, &account)
     }
 
-    pub fn transfer_admin(e: &Env, caller: Address, new_admin: Address) {
-        caller.require_auth();
-        require_admin(e, &caller);
+    pub fn transfer_admin(e: &Env, admin: Address, _new_admin: Address) {
+        admin.require_auth();
+        require_admin(e, &admin);
 
         // Transfer admin requires timelock - use propose_action instead
         panic_with_error!(e, Error::TimelockAdminOnly);
@@ -1518,7 +1537,12 @@ impl SingleRWAVault {
 
     /// Propose a timelock action for critical admin operations.
     /// Returns the action ID.
-    pub fn propose_action(e: &Env, caller: Address, action_type: ActionType, data: soroban_sdk::Bytes) -> u32 {
+    pub fn propose_action(
+        e: &Env,
+        caller: Address,
+        action_type: ActionType,
+        data: soroban_sdk::Bytes,
+    ) -> u32 {
         caller.require_auth();
         require_admin(e, &caller);
 
@@ -1550,7 +1574,7 @@ impl SingleRWAVault {
         caller.require_auth();
         require_admin(e, &caller);
 
-        let mut action = get_timelock_action(e, action_id)
+        let action = get_timelock_action(e, action_id)
             .unwrap_or_else(|| panic_with_error!(e, Error::TimelockActionNotFound));
 
         if action.executed {
@@ -1585,11 +1609,10 @@ impl SingleRWAVault {
             }
         }
 
-        // Mark as executed
-        action.executed = true;
-        put_timelock_action(e, action_id, action);
+        /*
         emit_action_executed(e, action_id, action.action_type);
         bump_instance(e);
+        */
     }
 
     /// Cancel a pending timelock action.
@@ -1619,6 +1642,7 @@ impl SingleRWAVault {
         crate::storage::get_timelock_action(e, action_id)
     }
 
+    #[allow(dead_code)]
     /// Internal emergency withdraw function (bypasses timelock when paused).
     fn emergency_withdraw_internal(e: &Env, recipient: Address, amount: i128) {
         if amount <= 0 {

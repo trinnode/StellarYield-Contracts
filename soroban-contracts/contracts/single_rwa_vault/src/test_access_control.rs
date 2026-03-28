@@ -104,7 +104,7 @@ fn test_set_operator_grants_access() {
     let (vault_id, _, _, admin) = make_vault(&e);
     let vault = SingleRWAVaultClient::new(&e, &vault_id);
     let operator = Address::generate(&e);
-    
+
     // With mock_all_auths, every address passes auth checks
     // So we can't test non-operator status properly
     // Just test that we can set an operator
@@ -253,7 +253,7 @@ fn test_emergency_withdraw_drains_vault() {
     // Add some funds to the vault
     token.mint(&vault_id, &5000);
     assert_eq!(token.balance(&vault_id), 5000);
-    
+
     // Pause vault first to bypass timelock check
     vault.pause(&admin, &String::from_str(&e, "Test"));
 
@@ -276,7 +276,7 @@ fn test_emergency_withdraw_non_admin_panics() {
     // An address with no role — not TreasuryManager, FullOperator, or admin.
     let nobody = Address::generate(&e);
     let recipient = Address::generate(&e);
-    
+
     // No auth mocking - should fail at auth level
     vault.emergency_withdraw(&nobody, &recipient);
 }
@@ -291,7 +291,7 @@ fn test_emergency_withdraw_zero_balance_no_transfer() {
     let recipient = Address::generate(&e);
 
     assert_eq!(token.balance(&vault_id), 0);
-    
+
     // Pause vault first to bypass timelock check
     vault.pause(&admin, &String::from_str(&e, "Test"));
 
