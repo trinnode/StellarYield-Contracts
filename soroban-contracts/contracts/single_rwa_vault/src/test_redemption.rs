@@ -908,7 +908,10 @@ fn test_claim_yield_for_epoch_twice_panics() {
 
     // First claim for epoch 1 succeeds
     let claimed = vault.claim_yield_for_epoch(&user, &1u32);
-    assert!(claimed > 0, "first claim should succeed and return positive amount");
+    assert!(
+        claimed > 0,
+        "first claim should succeed and return positive amount"
+    );
 
     // Second claim for the same epoch must panic with NoYieldToClaim
     vault.claim_yield_for_epoch(&user, &1u32);
@@ -927,7 +930,14 @@ fn test_claim_yield_with_zero_shares_returns_zero() {
     // Set up vault and distribute some yield (but don't let zero-share user deposit)
     let deposit_amount = 1_000_000i128;
     let other_user = Address::generate(&env);
-    fund_user(&env, &vault_id, &token_id, &zkme_id, &other_user, deposit_amount);
+    fund_user(
+        &env,
+        &vault_id,
+        &token_id,
+        &zkme_id,
+        &other_user,
+        deposit_amount,
+    );
 
     activate(&env, &vault_id, &admin);
 
@@ -938,15 +948,25 @@ fn test_claim_yield_with_zero_shares_returns_zero() {
     distribute_yield(&env, &vault_id, &token_id, &admin, yield_amount);
 
     // Verify zero-share user has no shares
-    assert_eq!(vault.balance(&user_with_zero_shares), 0, "user has zero shares");
+    assert_eq!(
+        vault.balance(&user_with_zero_shares),
+        0,
+        "user has zero shares"
+    );
 
     // Attempt to claim yield - should return 0, not panic
     let claimed = vault.claim_yield(&user_with_zero_shares);
-    assert_eq!(claimed, 0, "claim_yield should return 0 for users with zero shares");
+    assert_eq!(
+        claimed, 0,
+        "claim_yield should return 0 for users with zero shares"
+    );
 
     // Verify no yield is pending either
     let pending = vault.pending_yield(&user_with_zero_shares);
-    assert_eq!(pending, 0, "pending_yield should be 0 for users with zero shares");
+    assert_eq!(
+        pending, 0,
+        "pending_yield should be 0 for users with zero shares"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -969,7 +989,7 @@ fn test_multiple_users_claim_same_epoch_yield() {
     let deposit1 = 2_000_000i128; // 2 shares
     let deposit2 = 3_000_000i128; // 3 shares
     let deposit3 = 5_000_000i128; // 5 shares
-    let total_deposits = deposit1 + deposit2 + deposit3; // 10 shares total
+    let _total_deposits = deposit1 + deposit2 + deposit3; // 10 shares total
 
     fund_user(&env, &vault_id, &token_id, &zkme_id, &user1, deposit1);
     fund_user(&env, &vault_id, &token_id, &zkme_id, &user2, deposit2);
@@ -1008,7 +1028,10 @@ fn test_multiple_users_claim_same_epoch_yield() {
 
     // Total claimed should equal distributed yield
     let total_claimed = claimed1 + claimed2 + claimed3;
-    assert_eq!(total_claimed, yield_amount, "total claimed equals distributed yield");
+    assert_eq!(
+        total_claimed, yield_amount,
+        "total claimed equals distributed yield"
+    );
 
     // After claiming, all users should have zero pending yield for epoch 1
     assert_eq!(vault.pending_yield_for_epoch(&user1, &1u32), 0);

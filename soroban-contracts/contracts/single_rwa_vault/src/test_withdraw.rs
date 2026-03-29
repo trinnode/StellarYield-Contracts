@@ -206,6 +206,20 @@ fn test_withdraw_insufficient_allowance_panics() {
 #[test]
 #[should_panic]
 fn test_redeem_insufficient_shares_panics() {
+    let ctx = setup_with_kyc_bypass();
+    let v = ctx.vault();
+
+    deposit(&ctx, &ctx.user.clone(), 5_000_000); // 5 shares
+    activate(&ctx);
+
+    // Try to redeem more shares than the user holds — must panic.
+    v.redeem(&ctx.user, &10_000_000i128, &ctx.user, &ctx.user);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. Error: withdraw while vault is paused
+// ─────────────────────────────────────────────────────────────────────────────
+
 #[test]
 #[should_panic]
 fn test_withdraw_while_paused_panics() {
@@ -333,9 +347,11 @@ fn test_withdraw_at_non_unit_share_price() {
 #[should_panic(expected = "Error(Contract, #13)")]
 fn test_withdraw_zero_assets_panics() {
     let ctx = setup_with_kyc_bypass();
+    let v = ctx.vault();
 
     deposit(&ctx, &ctx.user.clone(), 10_000_000);
     activate(&ctx);
 
-    // Must panic — zero assets
+    // Must panic with ZeroAmount — passing 0 assets.
+    v.withdraw(&ctx.user, &0i128, &ctx.user, &ctx.user);
 }
