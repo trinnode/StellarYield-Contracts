@@ -324,6 +324,69 @@ fn test_full_operator_can_clear_blacklist_under_current_design() {
 }
 
 #[test]
+fn test_unblacklisted_user_can_resume_deposit_and_withdraw() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let (vault_id, token_id, zkme_id, admin) = make_vault(&e);
+    let vault = SingleRWAVaultClient::new(&e, &vault_id);
+    let token = MockTokenClient::new(&e, &token_id);
+    let zkme = MockZkmeClient::new(&e, &zkme_id);
+    let operator = Address::generate(&e);
+    let user = Address::generate(&e);
+
+    let initial_deposit = 1_000_000i128;
+    let resumed_deposit = 250_000i128;
+    let resumed_withdraw = 200_000i128;
+
+    vault.set_operator(&admin, &operator, &true);
+    zkme.approve_user(&user);
+    token.mint(&user, &2_000_000);
+
+    vault.deposit(&user, &initial_deposit, &user);
+    assert_eq!(vault.balance(&user), initial_deposit);
+
+    // Move to Active so both deposit and withdraw are valid once the issue is resolved.
+    vault.set_funding_target(&admin, &initial_deposit);
+    vault.activate_vault(&admin);
+
+    vault.set_blacklisted(&admin, &user, &true);
+    assert!(vault.is_blacklisted(&user));
+
+    let blocked_deposit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        vault.deposit(&user, &resumed_deposit, &user);
+    }));
+    assert!(
+        blocked_deposit.is_err(),
+        "blacklisted user deposit must fail"
+    );
+
+    let blocked_withdraw = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        vault.withdraw(&user, &resumed_withdraw, &user, &user);
+    }));
+    assert!(
+        blocked_withdraw.is_err(),
+        "blacklisted user withdraw must fail"
+    );
+
+    // Current design allows a FullOperator to clear blacklist status.
+    vault.set_blacklisted(&operator, &user, &false);
+    assert!(!vault.is_blacklisted(&user));
+
+    vault.deposit(&user, &resumed_deposit, &user);
+    assert_eq!(vault.balance(&user), initial_deposit + resumed_deposit);
+
+    vault.withdraw(&user, &resumed_withdraw, &user, &user);
+    assert_eq!(
+        vault.balance(&user),
+        initial_deposit + resumed_deposit - resumed_withdraw
+    );
+    assert_eq!(
+        token.balance(&user),
+        2_000_000 - initial_deposit - resumed_deposit + resumed_withdraw
+    );
+}
+
+#[test]
 fn test_multiple_consecutive_pauses_and_unpauses() {
     let e = Env::default();
     e.mock_all_auths();
