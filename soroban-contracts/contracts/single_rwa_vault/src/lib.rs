@@ -571,6 +571,89 @@ impl SingleRWAVault {
         get_share_balance(e, &owner)
     }
 
+    /// Batch redemption preflight check for multiple users.
+    ///
+    /// Returns per-user redemption feasibility with asset conversion preview.
+    /// This improves operator planning for coordinated redemptions.
+    ///
+    /// For each user, checks:
+    /// - Vault state (must be Active or Matured)
+    /// - User is not blacklisted
+    /// - User has sufficient share balance
+    /// - Computes asset output via preview_redeem
+    ///
+    /// Maximum batch size is 100 users to prevent excessive iteration.
+    /// Returns a vector of RedemptionPreflight results, one per user.
+    pub fn can_redeem_many(
+        e: &Env,
+        users: Vec<Address>,
+        shares: Vec<i128>,
+    ) -> Vec<RedemptionPreflight> {
+        const MAX_BATCH_SIZE: u32 = 100;
+
+        // Validate inputs
+        if users.len() != shares.len() {
+            panic_with_error!(e, Error::InvalidInput);
+        }
+        if users.len() > MAX_BATCH_SIZE {
+            panic_with_error!(e, Error::InvalidInput);
+        }
+
+        let mut results: Vec<RedemptionPreflight> = Vec::new(e);
+
+        // Check vault state once
+        let paused = get_paused(e);
+        let state = get_vault_state(e);
+        let can_redeem_state = !paused && (state == VaultState::Active || state == VaultState::Matured);
+
+        for i in 0..users.len() {
+            let user = users.get_unchecked(i);
+            let requested_shares = shares.get_unchecked(i);
+
+            let mut can_redeem = false;
+            let mut reason = String::from_str(e, "");
+            let mut assets_out = 0i128;
+
+            // Check vault state
+            if !can_redeem_state {
+                reason = if paused {
+                    String::from_str(e, "vault_paused")
+                } else {
+                    String::from_str(e, "invalid_vault_state")
+                };
+            }
+            // Check if user is blacklisted
+            else if get_blacklisted(e, &user) {
+                reason = String::from_str(e, "user_blacklisted");
+            }
+            // Check if shares amount is valid
+            else if requested_shares <= 0 {
+                reason = String::from_str(e, "zero_or_negative_shares");
+            }
+            // Check user balance
+            else {
+                let user_balance = get_share_balance(e, &user);
+                if user_balance < requested_shares {
+                    reason = String::from_str(e, "insufficient_balance");
+                } else {
+                    // All checks passed
+                    can_redeem = true;
+                    assets_out = preview_redeem(e, requested_shares);
+                }
+            }
+
+            results.push_back(RedemptionPreflight {
+                user: user.clone(),
+                shares: requested_shares,
+                assets_out,
+                can_redeem,
+                reason,
+            });
+        }
+
+        results
+    }
+
     pub fn total_assets(e: &Env) -> i128 {
         total_assets(e)
     }
@@ -742,6 +825,40 @@ impl SingleRWAVault {
     /// by `user`.  `pending_yield` scans from `last_claimed_epoch + 1` onwards.
     pub fn last_claimed_epoch(e: &Env, user: Address) -> u32 {
         get_last_claimed_epoch(e, &user)
+    }
+
+    /// Return the latest epoch where the user has non-zero claim potential.
+    ///
+    /// This helper avoids scanning the full epoch history on the client side.
+    /// Returns 0 if the user has no claimable yield in any epoch.
+    ///
+    /// Implementation uses a bounded backward scan from the current epoch,
+    /// checking if the user has shares and unclaimed yield for each epoch.
+    /// Stops early when a claimable epoch is found.
+    pub fn max_claimable_epoch(e: &Env, user: Address) -> u32 {
+        let current = get_current_epoch(e);
+        if current == 0 {
+            return 0;
+        }
+
+        // Scan backward from current epoch to find the latest claimable epoch
+        for epoch in (1..=current).rev() {
+            // Skip if already claimed
+            if get_has_claimed_epoch(e, &user, epoch) {
+                continue;
+            }
+
+            // Check if user has non-zero yield potential for this epoch
+            let user_shares = _get_user_shares_for_epoch(e, &user, epoch);
+            let total_shares = get_epoch_total_shares(e, epoch);
+            let epoch_yield = get_epoch_yield(e, epoch);
+
+            if user_shares > 0 && total_shares > 0 && epoch_yield > 0 {
+                return epoch;
+            }
+        }
+
+        0
     }
 
     /// Get detailed data for a single epoch.

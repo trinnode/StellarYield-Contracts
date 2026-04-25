@@ -56,4 +56,6 @@ pub enum Error {
     /// Burn requires pending yield to be claimed first (Option A).
     BurnRequiresYieldClaim = 32,
     InvalidDepositLimits = 33,
+    /// Invalid input parameters provided to a function.
+    InvalidInput = 34,
 }

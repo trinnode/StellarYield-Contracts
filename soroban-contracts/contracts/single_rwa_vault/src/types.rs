@@ -160,3 +160,14 @@ pub struct UserEpochYield {
     pub yield_earned: i128,
     pub claimed: bool,
 }
+
+/// Result of a single user's redemption preflight check.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct RedemptionPreflight {
+    pub user: Address,
+    pub shares: i128,
+    pub assets_out: i128,
+    pub can_redeem: bool,
+    pub reason: String,
+}
