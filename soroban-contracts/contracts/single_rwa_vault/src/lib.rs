@@ -2199,6 +2199,39 @@ impl SingleRWAVault {
         get_freeze_flags(e)
     }
 
+    /// Returns whether new deposits are currently allowed.
+    ///
+    /// Deposits are permitted when:
+    /// - Vault state is `Funding` or `Active`
+    /// - Vault is not paused
+    /// - Deposit/mint operations are not frozen
+    ///
+    /// This is useful for frontends to reliably determine whether to enable
+    /// or disable the deposit call-to-action button.
+    ///
+    /// # Returns
+    /// `true` if deposits can be submitted, `false` otherwise
+    pub fn is_funding_open(e: &Env) -> bool {
+        // Check vault state: must be Funding or Active
+        let state = get_vault_state(e);
+        if state != VaultState::Funding && state != VaultState::Active {
+            return false;
+        }
+
+        // Check if vault is paused
+        if get_paused(e) {
+            return false;
+        }
+
+        // Check if deposit/mint operations are frozen
+        let flags = get_freeze_flags(e);
+        if (flags & Self::FREEZE_DEPOSIT_MINT) != 0 {
+            return false;
+        }
+
+        true
+    }
+
     pub fn set_freeze_flags(e: &Env, caller: Address, flags: u32) {
         caller.require_auth();
         // TreasuryManager role required — also passes for FullOperator and admin.
