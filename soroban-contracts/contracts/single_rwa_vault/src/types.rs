@@ -131,6 +131,20 @@ pub struct RedemptionRequest {
     pub locked_asset_value: i128,
 }
 
+/// Statistics about the pending redemption queue.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct RedemptionQueueSummary {
+    /// Number of requests currently awaiting processing.
+    pub pending_count: u32,
+    /// Unix timestamp of the oldest pending request (0 if queue empty).
+    pub oldest_request_timestamp: u64,
+    /// Redemption ID of the oldest pending request.
+    pub oldest_request_id: u32,
+    /// Total number of shares requested across all pending entries.
+    pub total_pending_shares: i128,
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Epoch data structs (for historical yield queries)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -168,6 +182,26 @@ pub struct UserEpochYield {
     pub user_shares: i128,
     pub yield_earned: i128,
     pub claimed: bool,
+}
+
+/// Result of a single user's redemption preflight check.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct RedemptionPreflight {
+    pub user: Address,
+    pub shares: i128,
+    pub assets_out: i128,
+    pub can_redeem: bool,
+    pub reason: String,
+/// Composite epoch metadata for efficient indexer queries.
+/// Returns yield, total shares, and timestamp in a single call.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct EpochMetadata {
+    pub epoch: u32,
+    pub yield_amount: i128,
+    pub total_shares: i128,
+    pub timestamp: u64,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -220,6 +254,29 @@ pub struct ClaimYieldRangePreview {
     pub claimable_yield: i128,
     /// Number of epochs iterated (end - start + 1).
     pub epochs_scanned: u32,
+}
+
+/// Safe preview result for withdraw/redeem that avoids panics.
+/// Returns status code 0 on success, or a non-zero error code on failure.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct SafePreviewResult {
+    /// The previewed asset/share amount (0 if status_code != 0).
+    pub amount: i128,
+    /// 0 = success, non-zero = error code (e.g., PreviewZeroAssets = 48).
+    pub status_code: u32,
+}
+
+/// Per-user deposit preflight result for batched deposit checks.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct DepositCheckResult {
+    /// User address being checked.
+    pub user: Address,
+    /// 0 = deposit allowed, non-zero = error code (e.g., BelowMinimumDeposit = 6).
+    pub status_code: u32,
+    /// Expected share amount if deposit succeeds; 0 if status_code != 0.
+    pub expected_shares: i128,
 }
 
 /// Reason codes for `can_request_early_redemption`.
@@ -350,3 +407,16 @@ pub struct EmergencyProposal {
     pub proposed_at: u64,
     pub executed: bool,
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Interface IDs for supports_interface (#299)
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub const INTERFACE_BASE: u32 = 1;
+pub const INTERFACE_VAULT_ERC4626: u32 = 2;
+pub const INTERFACE_YIELD_ACCOUNTING: u32 = 3;
+pub const INTERFACE_EARLY_REDEMPTION: u32 = 4;
+pub const INTERFACE_RBAC: u32 = 5;
+pub const INTERFACE_TIMELOCK: u32 = 6;
+pub const INTERFACE_EMERGENCY: u32 = 7;
+pub const INTERFACE_ACTIVITY_TRACKING: u32 = 8;

@@ -23,6 +23,20 @@ pub struct VaultInfo {
     pub created_at: u64,
 }
 
+/// Lightweight vault metadata for list views.
+///
+/// Returns essential vault information without the full `VaultInfo` payload.
+/// Useful for list pages where full vault details are unnecessary.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct VaultBrief {
+    pub name: String,
+    pub symbol: String,
+    pub asset: Address,
+    pub active: bool,
+    pub created_at: u64,
+}
+
 /// Initialisation parameters for the SingleRWA vault constructor.
 ///
 /// This struct mirrors `single_rwa_vault::InitParams` field-for-field so that
@@ -93,6 +107,21 @@ pub struct FactoryDefaultsSnapshot {
     pub vault_wasm_hash: BytesN<32>,
 }
 
+/// Registry statistics snapshot containing aggregate vault metrics.
+///
+/// Useful for explorers and dashboards to efficiently retrieve key metrics
+/// without iterating through all vaults multiple times.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct RegistryStats {
+    /// Total number of vaults in the registry (all states)
+    pub total_vaults: u32,
+    /// Number of vaults with `active` flag set to true
+    pub active_vaults: u32,
+    /// Address of the most recently deployed vault (or None if no vaults exist)
+    pub latest_vault: Option<Address>,
+}
+
 /// Status filter used by `list_vaults_by_status`.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -121,3 +150,25 @@ pub enum Role {
     /// binary `Operator` flag — can create vaults and manage the factory.
     FullOperator,
 }
+
+/// Admin and configuration overview for the factory.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct FactoryAdminOverview {
+    pub admin: Address,
+    pub default_asset: Address,
+    pub default_zkme_verifier: Address,
+    pub default_cooperator: Address,
+    pub vault_wasm_hash: BytesN<32>,
+    pub default_fee_bps: u32,
+    pub vault_count: u32,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Interface IDs for supports_interface (#299)
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub const INTERFACE_BASE: u32 = 1;
+pub const INTERFACE_FACTORY_REGISTRY: u32 = 100;
+pub const INTERFACE_FACTORY_DEPLOYER: u32 = 101;
+pub const INTERFACE_RBAC: u32 = 5;

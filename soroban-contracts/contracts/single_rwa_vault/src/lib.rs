@@ -128,6 +128,11 @@ impl SingleRWAVault {
     /// enforces a maximum of 10 arguments per contract function.
     pub fn __constructor(e: &Env, params: InitParams) {
         // --- Validation ---
+        require_valid_address(e, &params.asset);
+        require_valid_address(e, &params.admin);
+        require_valid_address(e, &params.zkme_verifier);
+        require_valid_address(e, &params.cooperator);
+
         if params.asset == e.current_contract_address() {
             panic_with_error!(e, Error::InvalidInitParams);
         }
@@ -315,6 +320,7 @@ impl SingleRWAVault {
         caller.require_auth();
         // ComplianceOfficer role required — also passes for FullOperator and admin.
         require_role(e, &caller, Role::ComplianceOfficer);
+        require_valid_address(e, &verifier);
         let old = get_zkme_verifier(e);
         put_zkme_verifier(e, verifier.clone());
         emit_zkme_verifier_updated(e, old, verifier);
@@ -325,6 +331,7 @@ impl SingleRWAVault {
         caller.require_auth();
         // ComplianceOfficer role required — also passes for FullOperator and admin.
         require_role(e, &caller, Role::ComplianceOfficer);
+        require_valid_address(e, &new_cooperator);
         let old = get_cooperator(e);
         put_cooperator(e, new_cooperator.clone());
         emit_cooperator_updated(e, old, new_cooperator);
@@ -595,6 +602,60 @@ impl SingleRWAVault {
         preview_redeem(e, shares)
     }
 
+    /// Safe preview of shares burned to withdraw exactly `assets` (rounding **up**).
+    /// Returns status code 0 on success; no panic on error conditions.
+    pub fn safe_preview_withdraw(e: &Env, assets: i128) -> SafePreviewResult {
+        if assets < 0 {
+            return SafePreviewResult {
+                amount: 0,
+                status_code: Error::ZeroAmount as u32,
+            };
+        }
+        let supply = get_total_supply(e);
+        let ta = total_assets(e);
+        if supply == 0 || ta == 0 {
+            return SafePreviewResult {
+                amount: assets,
+                status_code: 0,
+            };
+        }
+        let shares = math::mul_div_ceil(e, assets, supply + VIRTUAL_OFFSET, ta + VIRTUAL_OFFSET);
+        SafePreviewResult {
+            amount: shares,
+            status_code: 0,
+        }
+    }
+
+    /// Safe preview of assets received when redeeming `shares` (rounding **down**).
+    /// Returns status code 0 on success; no panic on error conditions.
+    pub fn safe_preview_redeem(e: &Env, shares: i128) -> SafePreviewResult {
+        if shares < 0 {
+            return SafePreviewResult {
+                amount: 0,
+                status_code: Error::ZeroAmount as u32,
+            };
+        }
+        let supply = get_total_supply(e);
+        let ta = total_assets(e);
+        if supply == 0 {
+            return SafePreviewResult {
+                amount: shares,
+                status_code: 0,
+            };
+        }
+        let assets = math::mul_div(e, shares, ta + VIRTUAL_OFFSET, supply + VIRTUAL_OFFSET);
+        if shares > 0 && assets == 0 {
+            return SafePreviewResult {
+                amount: 0,
+                status_code: Error::PreviewZeroAssets as u32,
+            };
+        }
+        SafePreviewResult {
+            amount: assets,
+            status_code: 0,
+        }
+    }
+
     // ERC-4626 pure conversion helpers (floor division)
     // ─────────────────────────────────────────────────────────────────
 
@@ -622,6 +683,38 @@ impl SingleRWAVault {
 
     pub fn redemption_request(e: &Env, request_id: u32) -> RedemptionRequest {
         get_redemption_request(e, request_id)
+    }
+
+    /// Expose queue stats: pending count, oldest request timestamp/id, total requested shares.
+    ///
+    /// Operators can monitor backlog health without scanning every request.
+    pub fn get_redemption_queue_summary(e: &Env) -> RedemptionQueueSummary {
+        let total_requests = get_redemption_counter(e);
+        let mut pending_count = 0u32;
+        let mut oldest_request_timestamp = 0u64;
+        let mut oldest_request_id = 0u32;
+        let mut total_pending_shares = 0i128;
+
+        // Redemption IDs are 1-based monotonically increasing.  We scan from 1 up
+        // to `total_requests`.  Requests that have been processed are skipped.
+        for i in 1..=total_requests {
+            let req = get_redemption_request(e, i); // This panics if ID invalid, but we stay in bounds.
+            if !req.processed {
+                if pending_count == 0 {
+                    oldest_request_timestamp = req.request_time;
+                    oldest_request_id = i;
+                }
+                pending_count += 1;
+                total_pending_shares += req.shares;
+            }
+        }
+
+        RedemptionQueueSummary {
+            pending_count,
+            oldest_request_timestamp,
+            oldest_request_id,
+            total_pending_shares,
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -657,6 +750,23 @@ impl SingleRWAVault {
         }
 
         max_allowed
+    }
+
+    /// Returns the remaining deposit capacity for `user` based on current
+    /// cumulative deposits and max cap.
+    ///
+    /// This lets frontends enforce limits before sending transactions.
+    ///
+    /// # Returns
+    /// - `cap - already_deposited` if cap > 0.
+    /// - `i128::MAX` if cap is 0 (unlimited).
+    pub fn max_deposit_headroom(e: &Env, user: Address) -> i128 {
+        let cap = get_max_deposit_per_user(e);
+        if cap == 0 {
+            return i128::MAX;
+        }
+        let already = get_user_deposited(e, &user);
+        (cap - already).max(0)
     }
 
     /// Maximum shares `receiver` can obtain via `mint` right now.
@@ -703,6 +813,198 @@ impl SingleRWAVault {
         get_share_balance(e, &owner)
     }
 
+    /// Batch redemption preflight check for multiple users.
+    ///
+    /// Returns per-user redemption feasibility with asset conversion preview.
+    /// This improves operator planning for coordinated redemptions.
+    ///
+    /// For each user, checks:
+    /// - Vault state (must be Active or Matured)
+    /// - User is not blacklisted
+    /// - User has sufficient share balance
+    /// - Computes asset output via preview_redeem
+    ///
+    /// Maximum batch size is 100 users to prevent excessive iteration.
+    /// Returns a vector of RedemptionPreflight results, one per user.
+    pub fn can_redeem_many(
+        e: &Env,
+        users: Vec<Address>,
+        shares: Vec<i128>,
+    ) -> Vec<RedemptionPreflight> {
+        const MAX_BATCH_SIZE: u32 = 100;
+
+        // Validate inputs
+        if users.len() != shares.len() {
+            panic_with_error!(e, Error::InvalidInput);
+        }
+        if users.len() > MAX_BATCH_SIZE {
+            panic_with_error!(e, Error::InvalidInput);
+        }
+
+        let mut results: Vec<RedemptionPreflight> = Vec::new(e);
+
+        // Check vault state once
+        let paused = get_paused(e);
+        let state = get_vault_state(e);
+        let can_redeem_state = !paused && (state == VaultState::Active || state == VaultState::Matured);
+
+        for i in 0..users.len() {
+            let user = users.get_unchecked(i);
+            let requested_shares = shares.get_unchecked(i);
+
+            let mut can_redeem = false;
+            let mut reason = String::from_str(e, "");
+            let mut assets_out = 0i128;
+
+            // Check vault state
+            if !can_redeem_state {
+                reason = if paused {
+                    String::from_str(e, "vault_paused")
+                } else {
+                    String::from_str(e, "invalid_vault_state")
+                };
+            }
+            // Check if user is blacklisted
+            else if get_blacklisted(e, &user) {
+                reason = String::from_str(e, "user_blacklisted");
+            }
+            // Check if shares amount is valid
+            else if requested_shares <= 0 {
+                reason = String::from_str(e, "zero_or_negative_shares");
+            }
+            // Check user balance
+            else {
+                let user_balance = get_share_balance(e, &user);
+                if user_balance < requested_shares {
+                    reason = String::from_str(e, "insufficient_balance");
+                } else {
+                    // All checks passed
+                    can_redeem = true;
+                    assets_out = preview_redeem(e, requested_shares);
+                }
+            }
+
+            results.push_back(RedemptionPreflight {
+                user: user.clone(),
+                shares: requested_shares,
+                assets_out,
+                can_redeem,
+                reason,
+            });
+    /// Batched deposit preflight check (bounded to avoid expensive calls).
+    /// Returns per-user deposit validation results with status codes and expected shares.
+    /// Max batch size: 50 entries per call.
+    pub fn can_deposit_many(
+        e: &Env,
+        users: Vec<Address>,
+        amounts: Vec<i128>,
+    ) -> Vec<DepositCheckResult> {
+        const MAX_BATCH: u32 = 50;
+        let mut results: Vec<DepositCheckResult> = Vec::new(e);
+
+        #[allow(clippy::unnecessary_cast)]
+        let actual_len = users.len().min(amounts.len()) as u32;
+        if actual_len == 0 {
+            return results;
+        }
+
+        let capped = actual_len.min(MAX_BATCH);
+        if get_paused(e) {
+            for i in 0..capped {
+                let user = users.get_unchecked(i);
+                results.push_back(DepositCheckResult {
+                    user,
+                    status_code: Error::VaultPaused as u32,
+                    expected_shares: 0,
+                });
+            }
+            return results;
+        }
+
+        let state = get_vault_state(e);
+        if state != VaultState::Funding && state != VaultState::Active {
+            for i in 0..capped {
+                let user = users.get_unchecked(i);
+                results.push_back(DepositCheckResult {
+                    user,
+                    status_code: Error::InvalidVaultState as u32,
+                    expected_shares: 0,
+                });
+            }
+            return results;
+        }
+
+        let min_dep = get_min_deposit(e);
+        let max_dep = get_max_deposit_per_user(e);
+        let target = get_funding_target(e);
+        let mut current_total = total_assets(e);
+
+        for i in 0..capped {
+            let user = users.get_unchecked(i);
+            let assets = amounts.get_unchecked(i);
+
+            let mut status_code = 0u32;
+
+            if assets < min_dep {
+                status_code = Error::BelowMinimumDeposit as u32;
+            } else if max_dep > 0 {
+                let already = get_user_deposited(e, &user);
+                if already + assets > max_dep {
+                    status_code = Error::ExceedsMaximumDeposit as u32;
+                }
+            }
+
+            if status_code == 0
+                && state == VaultState::Funding
+                && target > 0
+                && current_total + assets > target
+            {
+                status_code = Error::FundingTargetExceeded as u32;
+            }
+
+            let expected_shares = if status_code == 0 {
+                let shares = preview_deposit(e, assets);
+                if shares == 0 {
+                    status_code = Error::PreviewZeroShares as u32;
+                }
+                shares
+            } else {
+                0
+            };
+
+            results.push_back(DepositCheckResult {
+                user,
+                status_code,
+                expected_shares,
+            });
+
+            if status_code == 0 && state == VaultState::Funding && target > 0 {
+                current_total += assets;
+            }
+        }
+
+        results
+    }
+
+    /// Returns the total assets currently held or controlled by the vault.
+    ///
+    /// This is the sum of all user deposits net of withdrawals, before
+    /// distributions and early redemption escrows. It does **not** include
+    /// unclaimed epoch yields; those are computed separately via `claim_yield`.
+    ///
+    /// # Value Representation
+    /// The returned value is in the vault's underlying asset token units
+    /// (e.g., USDC). For decimals, use the asset's token standard definition
+    /// (typically 6 or 18 decimals depending on the underlying asset).
+    ///
+    /// # Off-Chain Calculations
+    /// When computing share price off-chain (`share_price = total_assets / total_supply`),
+    /// ensure both values use the same decimals (scale `total_assets` by
+    /// `10^share_decimals` for accuracy).
+    ///
+    /// # See Also
+    /// - `total_supply()`: Returns the total outstanding vault shares
+    /// - `share_price()`: Pre-computed share price scaled by `10^share_decimals`
     pub fn total_assets(e: &Env) -> i128 {
         total_assets(e)
     }
@@ -770,6 +1072,21 @@ impl SingleRWAVault {
 
     pub fn storage_schema_version(e: &Env) -> u32 {
         get_storage_schema_version(e)
+    }
+
+    /// Provide a lightweight capability check endpoint for major function groups (#299).
+    pub fn supports_interface(_e: &Env, id: u32) -> bool {
+        matches!(
+            id,
+            INTERFACE_BASE
+                | INTERFACE_VAULT_ERC4626
+                | INTERFACE_YIELD_ACCOUNTING
+                | INTERFACE_EARLY_REDEMPTION
+                | INTERFACE_RBAC
+                | INTERFACE_TIMELOCK
+                | INTERFACE_EMERGENCY
+                | INTERFACE_ACTIVITY_TRACKING
+        )
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -1108,6 +1425,40 @@ impl SingleRWAVault {
         get_last_claimed_epoch(e, &user)
     }
 
+    /// Return the latest epoch where the user has non-zero claim potential.
+    ///
+    /// This helper avoids scanning the full epoch history on the client side.
+    /// Returns 0 if the user has no claimable yield in any epoch.
+    ///
+    /// Implementation uses a bounded backward scan from the current epoch,
+    /// checking if the user has shares and unclaimed yield for each epoch.
+    /// Stops early when a claimable epoch is found.
+    pub fn max_claimable_epoch(e: &Env, user: Address) -> u32 {
+        let current = get_current_epoch(e);
+        if current == 0 {
+            return 0;
+        }
+
+        // Scan backward from current epoch to find the latest claimable epoch
+        for epoch in (1..=current).rev() {
+            // Skip if already claimed
+            if get_has_claimed_epoch(e, &user, epoch) {
+                continue;
+            }
+
+            // Check if user has non-zero yield potential for this epoch
+            let user_shares = _get_user_shares_for_epoch(e, &user, epoch);
+            let total_shares = get_epoch_total_shares(e, epoch);
+            let epoch_yield = get_epoch_yield(e, epoch);
+
+            if user_shares > 0 && total_shares > 0 && epoch_yield > 0 {
+                return epoch;
+            }
+        }
+
+        0
+    }
+
     /// Get detailed data for a single epoch.
     pub fn get_epoch_data(e: &Env, epoch: u32) -> EpochData {
         let yield_amount = get_epoch_yield(e, epoch);
@@ -1122,6 +1473,26 @@ impl SingleRWAVault {
             yield_amount,
             total_shares,
             yield_per_share,
+            timestamp: get_epoch_timestamp(e, epoch),
+        }
+    }
+
+    /// Get composite epoch metadata in a single call for efficient indexer queries.
+    /// Returns yield amount, total shares, and timestamp with robust bounds checking.
+    pub fn get_epoch_metadata(e: &Env, epoch: u32) -> EpochMetadata {
+        // Bounds check: epoch must be valid (1 to current_epoch)
+        if epoch == 0 {
+            panic_with_error!(e, Error::InvalidEpochRange);
+        }
+        let current = get_current_epoch(e);
+        if epoch > current {
+            panic_with_error!(e, Error::InvalidEpochRange);
+        }
+
+        EpochMetadata {
+            epoch,
+            yield_amount: get_epoch_yield(e, epoch),
+            total_shares: get_epoch_total_shares(e, epoch),
             timestamp: get_epoch_timestamp(e, epoch),
         }
     }
@@ -1216,6 +1587,32 @@ impl SingleRWAVault {
     // Vault lifecycle
     // ─────────────────────────────────────────────────────────────────
 
+    /// Returns the current lifecycle state of the vault.
+    ///
+    /// # State Variants
+    /// - `Funding`: Vault is accepting deposits to reach the funding target.
+    ///   External callers (e.g., frontends, bots) should check this before
+    ///   allowing deposits or enabling UI for yield claims.
+    /// - `Active`: RWA investment is active and generating yield. Full vault
+    ///   operations (deposits, withdrawals, yield distribution) are available.
+    /// - `Matured`: Investment has reached maturity date; full redemptions are
+    ///   enabled. No new deposits accepted.
+    /// - `Closed`: Vault is permanently closed. No further state transitions.
+    /// - `Cancelled`: Funding deadline passed without meeting the funding target.
+    ///   Users can claim refunds for their deposited amounts.
+    /// - `Emergency`: Pause is active or emergency condition triggered. Users can
+    ///   claim their pro-rata share of remaining assets.
+    ///
+    /// # Caller Usage
+    /// Frontends, on-chain bots, and other contracts should query this state
+    /// before initiating deposits, withdrawals, or redemptions to ensure the
+    /// operation is permitted in the current vault lifecycle phase.
+    ///
+    /// # Transition Examples
+    /// - `Funding` → `Active` when `activate_vault()` is called by an operator
+    /// - `Funding` → `Cancelled` if funding deadline passes without meeting target
+    /// - `Active` → `Matured` when maturity date is reached
+    /// - Any state → `Emergency` if an emergency condition is triggered
     pub fn vault_state(e: &Env) -> VaultState {
         get_vault_state(e)
     }
@@ -1912,6 +2309,7 @@ impl SingleRWAVault {
     pub fn grant_role(e: &Env, caller: Address, addr: Address, role: Role) {
         caller.require_auth();
         require_admin(e, &caller);
+        require_valid_address(e, &addr);
         put_role(e, addr.clone(), role.clone(), true);
         emit_role_granted(e, addr, role);
         bump_instance(e);
@@ -1940,6 +2338,7 @@ impl SingleRWAVault {
     pub fn set_operator(e: &Env, caller: Address, operator: Address, status: bool) {
         caller.require_auth();
         require_admin(e, &caller);
+        require_valid_address(e, &operator);
         put_operator(e, operator.clone(), status);
         emit_operator_updated(e, operator, status);
         bump_instance(e);
@@ -2197,6 +2596,39 @@ impl SingleRWAVault {
 
     pub fn freeze_flags(e: &Env) -> u32 {
         get_freeze_flags(e)
+    }
+
+    /// Returns whether new deposits are currently allowed.
+    ///
+    /// Deposits are permitted when:
+    /// - Vault state is `Funding` or `Active`
+    /// - Vault is not paused
+    /// - Deposit/mint operations are not frozen
+    ///
+    /// This is useful for frontends to reliably determine whether to enable
+    /// or disable the deposit call-to-action button.
+    ///
+    /// # Returns
+    /// `true` if deposits can be submitted, `false` otherwise
+    pub fn is_funding_open(e: &Env) -> bool {
+        // Check vault state: must be Funding or Active
+        let state = get_vault_state(e);
+        if state != VaultState::Funding && state != VaultState::Active {
+            return false;
+        }
+
+        // Check if vault is paused
+        if get_paused(e) {
+            return false;
+        }
+
+        // Check if deposit/mint operations are frozen
+        let flags = get_freeze_flags(e);
+        if (flags & Self::FREEZE_DEPOSIT_MINT) != 0 {
+            return false;
+        }
+
+        true
     }
 
     pub fn set_freeze_flags(e: &Env, caller: Address, flags: u32) {
@@ -2501,15 +2933,24 @@ impl SingleRWAVault {
     }
 
     /// Returns the current storage schema version.
-    pub fn storage_schema_version(e: &Env) -> u32 {
-        get_storage_schema_version(e)
-    }
-
     /// Returns the contract’s immutable code version.
     pub fn contract_version(e: &Env) -> u32 {
         get_contract_version(e)
     }
 
+    /// Returns the address of the vault's underlying asset token.
+    ///
+    /// This is the token address specified during vault initialization
+    /// (e.g., USDC). All deposits and withdrawals use this asset.
+    ///
+    /// # Usage
+    /// Frontends and integrations should use this to obtain the correct token
+    /// address for approval, transfers, and balance queries. The asset address
+    /// is immutable for the lifetime of the vault.
+    ///
+    /// # See Also
+    /// - `total_assets()`: Total amount of this asset currently in the vault
+    /// - `total_supply()`: Total vault shares issued against this asset
     pub fn asset(e: &Env) -> Address {
         get_asset(e)
     }
@@ -2657,9 +3098,39 @@ impl SingleRWAVault {
     pub fn name(e: &Env) -> String {
         get_share_name(e)
     }
+    /// Returns the human-readable ticker/display symbol for the share token.
+    ///
+    /// This symbol is immutable and set once during contract initialization via the
+    /// `share_symbol` field in the `InitParams` struct. It cannot be changed after
+    /// contract deployment. The symbol is intended for display purposes in user
+    /// interfaces and wallets.
     pub fn symbol(e: &Env) -> String {
         get_share_symbol(e)
     }
+    /// Returns the total outstanding vault shares across all users.
+    ///
+    /// # Affected By Operations
+    /// - Increases when users call `deposit()` or `mint()`
+    /// - Decreases when users call `burn()` or `withdraw()`
+    /// - Unaffected by yield distribution; yields are tracked separately per epoch
+    ///
+    /// # Protocol-Owned Shares
+    /// No "dead" or protocol-owned shares are minted. All shares represent
+    /// user ownership in the vault.
+    ///
+    /// # Precision and Units
+    /// The returned value is in vault share units (not asset units).
+    /// Share decimals are configurable at initialization (max 18).
+    /// When computing share price off-chain, scale by `10^share_decimals`:
+    /// `share_price = total_assets * 10^share_decimals / total_supply`
+    ///
+    /// # Invariant
+    /// Combined with `total_assets()`, this value maintains the share price:
+    /// share price = total_assets / total_supply (before scaling)
+    ///
+    /// # See Also
+    /// - `total_assets()`: Returns the total asset value in the vault
+    /// - `share_price()`: Returns the current share price scaled by `10^share_decimals`
     pub fn total_supply(e: &Env) -> i128 {
         get_total_supply(e)
     }
@@ -2684,6 +3155,14 @@ impl SingleRWAVault {
 // ─────────────────────────────────────────────────────────────────────────────
 // Internal helpers
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Validates that an address is not the zero-equivalent (contract's own address).
+/// This prevents null-like semantics where the contract address is used as a placeholder.
+fn require_valid_address(e: &Env, addr: &Address) {
+    if *addr == e.current_contract_address() {
+        panic_with_error!(e, Error::ZeroAddress);
+    }
+}
 
 fn total_assets(e: &Env) -> i128 {
     get_total_deposited(e)
