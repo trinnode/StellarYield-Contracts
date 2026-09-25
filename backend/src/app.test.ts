@@ -1,0 +1,126 @@
+import { describe, it, expect, vi, beforeAll } from "vitest";
+
+vi.mock("./db/index.js", () => ({
+  query: vi.fn().mockResolvedValue([]),
+  pool: { query: vi.fn().mockResolvedValue({ rows: [] }) },
+}));
+vi.mock("pino-http", () => ({ pinoHttp: () => (_req: any, _res: any, next: any) => next() }));
+
+import { createApp } from "./app.js";
+
+const app = createApp();
+
+describe("Security headers (helmet) - #524", () => {
+  beforeAll(() => {
+    // ensure pool mock is in place before requests
+  });
+
+  it("GET /health returns X-Content-Type-Options: nosniff", async () => {
+    const { default: supertest } = await import("supertest");
+    const res = await supertest(app).get("/health");
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+  });
+
+  it("GET /health returns X-Frame-Options: SAMEORIGIN or DENY", async () => {
+    const { default: supertest } = await import("supertest");
+    const res = await supertest(app).get("/health");
+    // helmet sets SAMEORIGIN by default; both satisfy the security requirement
+    expect(res.headers["x-frame-options"]).toMatch(/SAMEORIGIN|DENY/);
+  });
+});
+
+describe("Request body size limit - #749", () => {
+  it("rejects a JSON body larger than the configured limit with 413", async () => {
+    const { default: supertest } = await import("supertest");
+    const oversized = { data: "x".repeat(200 * 1024) };
+    const res = await supertest(app)
+      .post("/api/v1/webhooks/verify-signature")
+      .send(oversized);
+    expect(res.status).toBe(413);
+  });
+
+  it("accepts a JSON body within the configured limit", async () => {
+    const { default: supertest } = await import("supertest");
+    const res = await supertest(app)
+      .post("/api/v1/webhooks/verify-signature")
+      .send({ data: "x".repeat(1024) });
+    expect(res.status).not.toBe(413);
+  });
+});
+
+describe("GraphQL schema export - #773", () => {
+  it("GET /api/graphql/schema returns parseable SDL", async () => {
+    const { default: supertest } = await import("supertest");
+    const { buildSchema } = await import("graphql");
+    const res = await supertest(app).get("/api/graphql/schema");
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toMatch(/application\/graphql/);
+    expect(() => buildSchema(res.text)).not.toThrow();
+  });
+});
+
+describe("Apollo GraphQL server - #765", () => {
+  it("POST /api/graphql with { query: \"{ health }\" } returns { data: { health: \"ok\" } }", async () => {
+    const { default: supertest } = await import("supertest");
+    const res = await supertest(app)
+      .post("/api/graphql")
+      .send({ query: "{ health }" });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ data: { health: "ok" } });
+  });
+});
+
+describe("API metadata endpoints - #911/#912", () => {
+  it("returns the static changelog with the initial release", async () => {
+    const { default: supertest } = await import("supertest");
+    const res = await supertest(app).get("/api/changelog");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(expect.arrayContaining([
+      expect.objectContaining({ version: "1.0.0", breaking: false, changes: expect.any(Array) }),
+    ]));
+  });
+
+  it("sets the configured SLA header for vault requests", async () => {
+    const { default: supertest } = await import("supertest");
+    const res = await supertest(app).get("/api/v1/vaults");
+
+    expect(res.headers["x-sla-ms"]).toBe("200");
+  });
+});
+
+describe("Sandbox mode and security audit - #938/#936", () => {
+  it("returns the sandbox header and a mocked success response for mutating endpoints", async () => {
+    process.env.SANDBOX_MODE = "true";
+    const { default: supertest } = await import("supertest");
+    const { query } = await import("./db/index.js");
+    vi.mocked(query).mockResolvedValue([{ id: 1, role: "admin", label: "ci" }]);
+    const appSandbox = createApp();
+    const res = await supertest(appSandbox)
+      .post("/api/v1/admin/vaults/reindex")
+      .set("Authorization", "Bearer admin-key");
+
+    expect(res.status).toBe(200);
+    expect(res.headers["x-sandbox"]).toBe("true");
+    expect(res.body).toEqual({ success: true });
+  });
+
+  it("GET /api/v1/admin/security/headers-audit returns required header audit entries", async () => {
+    process.env.SANDBOX_MODE = "false";
+    const { default: supertest } = await import("supertest");
+    const { query } = await import("./db/index.js");
+    vi.mocked(query).mockResolvedValue([{ id: 1, role: "admin", label: "ci" }]);
+    const res = await supertest(app)
+      .get("/api/v1/admin/security/headers-audit")
+      .set("Authorization", "Bearer admin-key");
+
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body)).toBe(true);
+    expect(res.body).toEqual(expect.arrayContaining([
+      expect.objectContaining({ header: "x-content-type-options", required: true }),
+      expect.objectContaining({ header: "x-frame-options", required: true }),
+      expect.objectContaining({ header: "content-security-policy", required: true }),
+      expect.objectContaining({ header: "strict-transport-security", required: true }),
+    ]));
+  });
+});

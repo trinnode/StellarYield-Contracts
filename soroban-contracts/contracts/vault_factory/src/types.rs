@@ -11,6 +11,10 @@ pub enum VaultType {
 }
 
 /// Vault registration metadata.
+///
+/// Fields added for issue #515 (operatorFeeBps), #516 (maturityDate),
+/// and #517 (expectedApy) so that frontends can display fee, maturity,
+/// and APY data without an additional on-chain read.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct VaultInfo {
@@ -21,6 +25,13 @@ pub struct VaultInfo {
     pub symbol: String,
     pub active: bool,
     pub created_at: u64,
+    /// Operator fee in basis points (issue #515). Sourced from
+    /// `early_redemption_fee_bps` set at vault creation.
+    pub operator_fee_bps: u32,
+    /// Unix timestamp (seconds) at which the vault matures (issue #516).
+    pub maturity_date: u64,
+    /// Expected APY in basis points as encoded on-chain (issue #517).
+    pub expected_apy: u32,
 }
 
 /// Lightweight vault metadata for list views.
@@ -62,6 +73,14 @@ pub struct SingleRwaVaultInitParams {
     pub rwa_document_uri: String,
     pub rwa_category: String,
     pub expected_apy: u32,
+    /// Lock-up period in seconds after deposit (0 = no lock-up).
+    pub lock_up_period: u64,
+    /// Operator fee in basis points, charged on distributed yield (max 1_000).
+    pub operator_fee_bps: u32,
+    /// Delay in seconds before a proposed timelock action may execute.
+    pub timelock_delay: u64,
+    /// Period over which claimed yield vests (0 = immediately claimable).
+    pub yield_vesting_period: u64,
 }
 
 /// Parameters for batch vault creation (mirrors BatchVaultParams in Solidity).
